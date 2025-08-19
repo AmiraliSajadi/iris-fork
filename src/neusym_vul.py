@@ -425,20 +425,33 @@ class SAPipeline:
         remaining_apis = sorted(list(set(candidates).difference(cached_apis)))
         return remaining_apis
 
+    # Modified function
     def merge_llm_labeled_apis_and_cache(self, candidates, new_llm_result):
+        # Helper to unify key format
+        def build_key(pkg, clazz, method, sig):
+            return f"{pkg},{clazz},{method},{sig}"
+
         cached_result = self.load_cached_llm_labeled_apis()
         cached_mapping = {",".join([item["package"], item["class"], item["method"], item["signature"]]): item for item in cached_result}
         new_llm_mapping = {",".join([item["package"], item["class"], item["method"], item["signature"]]): item for item in new_llm_result}
 
         result = []
-        for item in candidates:
-            item_key = ",".join(item)
+        # for item in candidates:
+        for pkg, clazz, func, sig in candidates:
+            item_key = build_key(pkg, clazz, func, sig)
+            # item_key = ",".join(item)
             if item_key in new_llm_mapping:
                 result.append(new_llm_mapping[item_key])
             elif item_key in cached_mapping:
                 if cached_mapping[item_key].get("type", "") != "none":
                     copy_of_cached_item = {k: v for (k, v) in cached_mapping[item_key].items()}
                     result.append(copy_of_cached_item)
+
+        # also keep new_llm_result items that didn’t match candidates
+        for key, item in new_llm_mapping.items():   
+            if key not in [build_key(*c) for c in candidates]:   
+                result.append(item)   
+
         return result
 
     def cache_llm_results(self, candidates, new_llm_result):
@@ -546,8 +559,17 @@ class SAPipeline:
         return s, start, end
 
     def _normalize_path_from_location(self, raw_path: str) -> str:
-        """Re-root to project_source_code_dir if the path already contains project-sources/<slug>/"""
-        p = self._strip_file_uri(raw_path)
+        """
+        Re-root to project_source_code_dir if the path already contains project-sources/<slug>/
+        input example: file:///temp_ssd/amirali/iris_all/iris-aug5/data/cwe-bench-java/project-sources/perwendel__spark_CVE-2018-9159_2.7.1/src/main/java/spark/http/matching/MatcherFilter.java:171:30:171:70
+        """
+        # p = self._strip_file_uri(raw_path)
+        if raw_path.startswith("file:"):
+            raw_path = raw_path.replace("file://", "")
+        elif raw_path.startswith("jar:file:"):
+            raw_path = raw_path.replace("jar:", "")
+        p = re.sub(r"(:\d+)+$", "", raw_path)
+
         if os.path.isabs(p) and os.path.exists(p):
             return p
         anchor = os.path.join("project-sources", self.project_name) + os.sep
@@ -606,29 +628,24 @@ class SAPipeline:
         pkg = row.get("package",""); cls = row.get("class","")
         mtd = row.get("method","");  sig = row.get("signature","")
 
+        #FIXME: some keys might not be returning right causing empty keys and cands and sources
         key_exact = self._api_key(pkg, cls, mtd, sig)
         key_norm  = self._api_key(pkg, cls, mtd, self._normalize_sig(sig))
-        print('\n\nkey_exact: ', self._api_loc_index.get(key_exact))
-        print('\n\n key_norm: ', self._api_loc_index.get(key_norm))
+        # print('\nkey_exact: ', self._api_loc_index.get(key_exact))
+        # print('\nkey_norm: ', self._api_loc_index.get(key_norm))
         cands = self._api_loc_index.get(key_exact) or self._api_loc_index.get(key_norm) or []
         if not cands:
             return "// source unavailable"
 
         loc = cands[0].get("location","")
-        print('\n\nloc: ', loc)
+        print('\nloc: ', loc)
         file_path, start, end = self._parse_location(loc)
-        print('\n\nfile_path: ', file_path)
         file_path = self._normalize_path_from_location(file_path)
-        print('\n\nfile_path: ', file_path)
-        #TODO: here the path needs to be edited. rn it's like:
-        # file:///temp_ssd/amirali/iris_all/iris-aug5/data/cwe-bench-java/project-sources/perwendel__spark_CVE-2018-9159_2.7.1/src/main/java/spark/http/matching/MatcherFilter.java:171:30:171:70
-        file_path = re.sub(r':\d+:\d+$', '', loc)
-        print('i replaced this to remove lines: ', file_path)
+        print('file_path: ', file_path)
         if not file_path:
             return f"// source unavailable (bad location: {loc})"
 
 
-        print(f"\n\n\n\nfile path that doesn't exist: {file_path}")
         if not os.path.exists(file_path):
             print("os says doesn't exist")
             return f"// source unavailable (file not found: {file_path})"
@@ -671,9 +688,11 @@ class SAPipeline:
 
             method_lines = []
             for row in batch:
+                source = ""
                 try:
                     source = self.retrieve_src(row)  # IMPLEMENT THIS
-                    print(f"\nSource Retrieved: {source}\n")
+                    source = source.replace("\n", "\\n")  # escape newlines to fit CSV format
+                    print(f"\nSource Retrieved")
                 except Exception as e:
                     self.project_logger.error(f"Error retrieving source for {row}: {e}")
                     source = "// source unavailable"
@@ -683,7 +702,7 @@ class SAPipeline:
                     row.get("class", ""),
                     row.get("method", ""),
                     row.get("signature", ""),
-                    source.replace("\n", "\\n")  # escape newlines to fit CSV format
+                    source
                 ])
                 method_lines.append(method_line)
 
@@ -707,11 +726,13 @@ class SAPipeline:
 
         # Build prompts and send to LLM
         indiv_prompts = [build_prompt_batch(i) for i in args]
-        responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads)
+        responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads, all_in=True)
 
         all_results = []
         for i, response in zip(args, responses):
-            json_result = self.parse_json(response)
+            #FIXME: could remove the clean stuff
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response).strip(), flags=re.DOTALL)
+            json_result = self.parse_json(clean)
             with open(f"{self.label_api_log_path}/secondpass_response_{i}.txt", "w") as f:
                 f.write(str(response) + "\n")
             all_results.extend(json_result)
@@ -782,7 +803,9 @@ class SAPipeline:
             indiv_results = []
             responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads)
             for i, response in zip(args, responses):
-                json_result = self.parse_json(response)
+                #FIXME: could remove the clean stuff
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response).strip(), flags=re.DOTALL)
+                json_result = self.parse_json(clean)
                 with open(f"{self.label_api_log_path}/raw_llm_response_{i}.txt", "w") as f:
                     f.write(str(response) + "\n")
                 indiv_results.append(json_result)
@@ -812,10 +835,13 @@ class SAPipeline:
 
             # Second pass: process unknowns
             if unknown_apis:
-                #TODO: Implement the self.process_unknown
                 processed_unknowns = self.process_unknown(unknown_apis)
                 # Filter out any that are still unknown after second pass
+                print(f"processed_unknowns data type is {type(processed_unknowns)} and it contains:\n{processed_unknowns}")
                 processed_known = [r for r in processed_unknowns if r.get("type", "") in ("source", "sink", "taint-propagator")]
+                processed_still_unknown = [r for r in processed_unknowns if r.get("type", "") not in ("source", "sink", "taint-propagator")]
+                print(f"\n\n\nTHIS IS IT:::: ROCESSED_***STILL***_UNKNOWN: \n{processed_still_unknown}\n")
+                print(f"\n\n\nTHIS IS IT:::: ROCESSED_KNOWN: \n{processed_known}\n")
                 self.project_logger.info(f"  ==> After second pass: {len(processed_known)} new labeled")
             else:
                 processed_known = []
@@ -999,7 +1025,10 @@ class SAPipeline:
             indiv_results = []
             responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads)
             for i, response in zip(args, responses):
-                json_result = self.parse_json(response)
+                #FIXME: could remove the clean stuff
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response).strip(), flags=re.DOTALL)
+                json_result = self.parse_json(clean)
+                
                 with open(f"{self.label_func_params_log_path}/raw_llm_response_{i}.txt", "w") as f:
                         f.write(response + "\n")
                 indiv_results.append(json_result)
@@ -1512,22 +1541,23 @@ class SAPipeline:
         self.query_gpt_for_func_param_src()
 
         # 5. Build local query for this project
-        self.build_project_specific_query()
+        # self.build_project_specific_query()
 
         # 6. Send the local query for vulnerability detection
-        self.find_vulnerability()
+        # self.find_vulnerability()
 
         # 7. Do a post-processing step for rule-based filtering of paths
-        self.post_process_cwe_query_result()
+        #FIXME: Removing this for now
+        # self.post_process_cwe_query_result()
 
         # 8. Do posthoc filtering
-        self.query_gpt_for_posthoc_filtering()
+        # self.query_gpt_for_posthoc_filtering()
 
         # 9. Evaluate performance
-        self.evaluate_result()
+        # self.evaluate_result()
 
         # 10. Debuggging
-        self.debug_result()
+        # self.debug_result()
 
 
 if __name__ == '__main__':

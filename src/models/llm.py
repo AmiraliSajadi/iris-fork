@@ -113,7 +113,7 @@ class LLM:
     def get_model_names(self):
         return list(model_name_map.keys())
 
-    def predict_main(self, prompt, batch_size=0, no_progress_bar=False):
+    def predict_main(self, prompt, batch_size=0, no_progress_bar=False, all_in=False):
         if self.kwargs.get("vllm", None):
             from vllm import SamplingParams
 
@@ -195,8 +195,7 @@ class LLM:
 
                 mydataset = ListDataset(prompt)
                 # FIXME:LIMITING TO 2 INSTNACES HERE!!!!!!!!!!!!!!!!!!!
-                inputs = mydataset.take(4, 3)
-                print(f"input: {inputs}")
+                inputs = mydataset.take(4, 3) if not all_in else mydataset
                 for result in tqdm.tqdm(
                     # FIXME: VERY IMPORTANT: REMOVE inputs
                     self.pipe(
@@ -217,17 +216,6 @@ class LLM:
 
                     output.append(result)
                     print(f"\n\n\n UGLY PRINTING RESULT:\n{result}\n")
-                    print("------> result[0]:\n")
-                    jj = json.loads(
-                        result[0]["generated_text"]
-                        .strip("`")
-                        .split("\n", 1)[1]
-                        .rsplit("\n", 1)[0]
-                    )
-                    # FIXME: Remove prints:
-                    print("For item in results[0]:\n")
-                    for item in jj:
-                        pprint(jj)
                 return [o[0]["generated_text"] for o in output]
             else:
                 output = self.pipe(

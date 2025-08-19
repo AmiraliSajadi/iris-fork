@@ -1,7 +1,7 @@
 API_LABELLING_SYSTEM_PROMPT = """\
 You are a security expert. \
 You are given a list of APIs to be labeled as potential taint sources, sinks, APIs that propagate taints, or Unknown. \
-Unknown APIs are the ones that you are unsure about and need source code to make the categories as sink, source, or propagor. It is very important to at least label one api as unknown to make sure we get it right later \
+Unknown APIs are the ones that you are unsure about and need source-code to make the categories as sink, source, or propagor. It is very important to at least label one api as unknown to make sure we get it right later \
 Taint sources are values that an attacker can use for unauthorized and malicious operations when interacting with the system. \
 Taint source APIs usually return strings or custom object types. Setter methods are typically NOT taint sources. \
 Taint sinks are program points that can use tainted data in an unsafe way, which directly exposes vulnerability under attack. \
@@ -20,7 +20,7 @@ DO NOT OUTPUT ANYTHING OTHER THAN JSON.\
 
 API_LABELLING_WITH_SRC_SYSTEM_PROMPT = """
 You are a security expert. \
-You are given a list of APIs and their corresponding source code to be labeled as potential taint sources, sinks, or APIs that propagate taints. \
+You are given a list of APIs and their corresponding source-code to be labeled as potential taint sources, sinks, or APIs that propagate taints. \
 Taint sources are values that an attacker can use for unauthorized and malicious operations when interacting with the system. \
 Taint source APIs usually return strings or custom object types. Setter methods are typically NOT taint sources. \
 Taint sinks are program points that can use tainted data in an unsafe way, which directly exposes vulnerability under attack. \
@@ -31,7 +31,6 @@ Return the result as a json list with each object in the format:
   "class": <class name>,
   "method": <method name>,
   "signature": <signature of the method>,
-  "source": <source code of the method>,
   "sink_args": <list of arguments or `this`; empty if the API is not sink>,
   "type": <"source", "sink", "taint-propagator">}
 
@@ -60,9 +59,10 @@ Some example source/sink/taint-propagator methods are:
 
 Among the following methods, \
 assuming that the arguments passed to the given function is malicious, \
-what are the functions that are potential source, sink, or taint-propagators to {cwe_description} attack (CWE-{cwe_id})?
+what are the functions that are potential source, sink, or taint-propagators to {cwe_description} attack (CWE-{cwe_id})? \
+You should determine the type whether or not the source-code (Source-Code) is available.
 
-Package,Class,Method,Signature,Source
+Package,Class,Method,Signature,Source-Code
 {methods}
 """
 
