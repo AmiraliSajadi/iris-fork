@@ -680,7 +680,8 @@ class SAPipeline:
         cwe_long_description = QUERIES[self.query]["prompts"]["long_desc"]
         cwe_examples = json.dumps(QUERIES[self.query]["prompts"]["examples"], indent=2)
 
-        batch_size = self.label_api_batch_size
+        # batch_size = self.label_api_batch_size
+        batch_size = 1
         args = range(0, len(unknown_apis), batch_size)
 
         def build_prompt_batch(i):
@@ -726,7 +727,8 @@ class SAPipeline:
 
         # Build prompts and send to LLM
         indiv_prompts = [build_prompt_batch(i) for i in args]
-        responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads, all_in=True)
+        # responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads, all_in=True)
+        responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads)
 
         all_results = []
         for i, response in zip(args, responses):
@@ -980,6 +982,8 @@ class SAPipeline:
         # Return
         return candidates
 
+    ################### MORE CHANGES #####################
+    ######################################################
     def query_gpt_for_func_param_src(self):
         self.project_logger.info("==> Stage 4: Querying GPT for source function parameters...")
         if not os.path.exists(self.llm_labelled_source_func_params_path) or self.overwrite or self.overwrite_labelled_func_param:
@@ -1033,6 +1037,21 @@ class SAPipeline:
                         f.write(response + "\n")
                 indiv_results.append(json_result)
 
+            # # FIRST-PASS SPLIT
+            # known = [r for r in indiv_results if r.get("type") == "source" and r.get("tainted_input")]
+            # unknown = [r for r in indiv_results if r.get("type") == "unknown" or not r.get("tainted_input")]
+            # print(f"\n===> After first pass:\n{len(known)}/{len(indiv_results)} known\n{len(unknown)}/{len(indiv_results)} unknown\n")
+            #
+            # # SECOND PASS on unknowns WITH SOURCE CODE
+            # if unknown:
+            #     # Ensure unknowns carry the 4 keys needed to fetch source (package,class,method,signature)
+            #     # If any missing, try to derive from your candidates mapping before calling:
+            #     second_pass = self.process_unknown_func_params(unknown)
+            #     # keep only the ones that actually became sources
+            #     # newly_known = [r for r in second_pass if r.get("type") == "source" and r.get("tainted_input")]
+            #     self.project_logger.info(f"  ==> After second pass {len(newly_known)} new apis were labeled.")
+            #     known.extend(newly_known)
+
             # 6. Merge all the results
             merged_llm_results = []
             for indiv_result in indiv_results:
@@ -1044,6 +1063,8 @@ class SAPipeline:
                 json.dump(merged_llm_results, open(self.llm_labelled_source_func_params_path, "w"), indent=2)
         else:
             self.project_logger.info(f"  ==> Found labelled source function parameters. Skipping...")
+    ######################################################
+    ######################################################
 
     def not_none(self, d, keys):
         return isinstance(d, dict) and all([d.get(k, None) for k in keys])
@@ -1541,23 +1562,22 @@ class SAPipeline:
         self.query_gpt_for_func_param_src()
 
         # 5. Build local query for this project
-        # self.build_project_specific_query()
+        self.build_project_specific_query()
 
         # 6. Send the local query for vulnerability detection
-        # self.find_vulnerability()
+        self.find_vulnerability()
 
         # 7. Do a post-processing step for rule-based filtering of paths
-        #FIXME: Removing this for now
-        # self.post_process_cwe_query_result()
+        self.post_process_cwe_query_result()
 
         # 8. Do posthoc filtering
-        # self.query_gpt_for_posthoc_filtering()
+        self.query_gpt_for_posthoc_filtering()
 
         # 9. Evaluate performance
-        # self.evaluate_result()
+        self.evaluate_result()
 
         # 10. Debuggging
-        # self.debug_result()
+        self.debug_result()
 
 
 if __name__ == '__main__':

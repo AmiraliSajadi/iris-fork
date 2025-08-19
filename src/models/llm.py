@@ -195,7 +195,8 @@ class LLM:
 
                 mydataset = ListDataset(prompt)
                 # FIXME:LIMITING TO 2 INSTNACES HERE!!!!!!!!!!!!!!!!!!!
-                inputs = mydataset.take(4, 3) if not all_in else mydataset
+                # inputs = mydataset.take(4, 3) if not all_in else mydataset
+                inputs = mydataset
                 for result in tqdm.tqdm(
                     # FIXME: VERY IMPORTANT: REMOVE inputs
                     self.pipe(
