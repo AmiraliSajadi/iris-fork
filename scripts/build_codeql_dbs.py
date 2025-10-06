@@ -138,12 +138,22 @@ def main():
     if args.project:
         project = next((p for p in projects if p['project_slug'] == args.project), None)
         if project:
-            env = setup_environment(project, java_env_path)
-            create_codeql_database(project['project_slug'], env, args.db_path, args.sources_path)
+            # Skip JSPWiki projects
+            if 'jspwiki' in project['project_slug'].lower() or 'dspace' in project['project_slug'].lower():
+                print(f"Skipping JSPWiki project {project['project_slug']}")
+                print(f"Skipping DSpace project {project['project_slug']}")
+            else:
+                env = setup_environment(project, java_env_path)
+                create_codeql_database(project['project_slug'], env, args.db_path, args.sources_path)
         else:
             print(f"Project {args.project} not found in CSV file")
     else:
         for project in projects:
+            # Skip JSPWiki projects
+            if 'jspwiki' in project['project_slug'].lower() or 'dspace' in project['project_slug'].lower():
+                print(f"Skipping JSPWiki project {project['project_slug']}")
+                print(f"Skipping DSpace project {project['project_slug']}")
+                continue
             env = setup_environment(project, java_env_path)
             create_codeql_database(project['project_slug'], env, args.db_path, args.sources_path)
 

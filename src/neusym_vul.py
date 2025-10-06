@@ -45,6 +45,8 @@ from src.prompts import (API_LABELLING_SYSTEM_PROMPT,
                          API_LABELLING_WITH_SRC_SYSTEM_PROMPT,
                          API_LABELLING_WITH_SRC_USER_PROMPT,
                          FUNC_PARAM_LABELLING_SYSTEM_PROMPT,
+                         FUNC_PARAM_LABELLING_SYSTEM_PROMPT_WITH_SRC,
+                         FUNC_PARAM_LABELLING_USER_PROMPT_WITH_SRC,
                          FUNC_PARAM_LABELLING_USER_PROMPT)
 from src.queries import QUERIES
 
@@ -416,6 +418,16 @@ class SAPipeline:
         else:
             return []
 
+    # def _dedupe_api_objs(self, rows):
+    #     """Deduplicate by (pkg,class,method,normalized signature)."""
+    #     seen, out = set(), []
+    #     for r in rows:
+    #         k = (r.get("package",""), r.get("class",""),
+    #              r.get("method",""), self._normalize_sig(r.get("signature","")))
+    #         if k in seen: continue
+    #         seen.add(k); out.append(r)
+    #     return out
+
     def filter_to_query_apis_with_cache(self, candidates):
         """
         :param candidates, a list of the following [(<package>, <class>, <method>, <signature>), ...]
@@ -518,18 +530,25 @@ class SAPipeline:
         return t
 
     def _normalize_sig(self, sig: str) -> str:
-        # "Integer valueOf(String p0)" -> "valueOf(String)"
-        if not isinstance(sig, str): return str(sig)
+        if not isinstance(sig, str):
+            return str(sig)
         s = sig.strip()
-        if "(" not in s: return s
+        if not s:
+            return ""
+        if "(" not in s:
+            return s
         head, tail = s.split("(", 1)
-        # keep only the last token of head (the method name)
-        mname = head.strip().split()[-1]
+        head_tokens = head.strip().split()
+        if not head_tokens:
+            # malformed signature, return raw
+            return s
+        mname = head_tokens[-1]
         params = tail.rsplit(")", 1)[0]
         types = []
         for p in params.split(","):
             p = p.strip()
-            if not p: continue
+            if not p:
+                continue
             tok = p.split()[0]  # drop arg names
             types.append(self._canon_type(tok))
         return f"{mname}({', '.join(types)})"
@@ -588,14 +607,53 @@ class SAPipeline:
             fdf = pd.read_csv(self.func_locs_path)
             self._func_map = self.extract_enclosing_decl_locs_map(fdf)
 
+    # def _load_candidates_df(self):
+    #     # candidate_apis.csv: package, clazz, func, full_signature
+    #     # external_apis.csv: same + location
+    #     cand = pd.read_csv(self.candidate_apis_csv_path, keep_default_na=False)
+    #     ext  = pd.read_csv(self.external_apis_csv_path, keep_default_na=False)
+    #     key = ["package", "clazz", "func", "full_signature"]
+    #     merged = cand.merge(ext[key + ["location"]], on=key, how="left")
+    #     merged = merged.rename(columns={"clazz":"class","func":"method","full_signature":"signature"})
+    #     return merged
+    # def _load_candidates_df(self):
+    #     cand = pd.read_csv(self.candidate_apis_csv_path, keep_default_na=False)
+    #     ext  = pd.read_csv(self.external_apis_csv_path, keep_default_na=False)
+
+    #     # Prefer internal_signature, but also keep full_signature for fallback
+    #     if "internal_signature" in ext.columns:
+    #         ext["signature"] = ext["internal_signature"]
+    #     else:
+    #         ext["signature"] = ext["full_signature"]
+
+    #     key = ["package", "clazz", "func", "signature"]
+    #     merged = cand.merge(ext[key + ["location"]], on=key, how="outter")
+
+    #     merged = merged.rename(columns={"clazz": "class", "func": "method"})
+    #     return merged
     def _load_candidates_df(self):
-        # candidate_apis.csv: package, clazz, func, full_signature
-        # external_apis.csv: same + location
         cand = pd.read_csv(self.candidate_apis_csv_path, keep_default_na=False)
         ext  = pd.read_csv(self.external_apis_csv_path, keep_default_na=False)
-        key = ["package", "clazz", "func", "full_signature"]
-        merged = cand.merge(ext[key + ["location"]], on=key, how="left")
-        merged = merged.rename(columns={"clazz":"class","func":"method","full_signature":"signature"})
+
+        # Prefer internal_signature, but also keep full_signature for fallback
+        if "internal_signature" in ext.columns:
+            ext["signature"] = ext["internal_signature"]
+        else:
+            ext["signature"] = ext["full_signature"]
+
+        key = ["package", "clazz", "func", "signature"]
+
+        # Full outer join to keep all rows from both cand and ext
+        merged = cand.merge(
+            ext[key + ["location"]],
+            on=key,
+            how="outer",
+            suffixes=("_cand", "_ext")  # prevent _x/_y surprises if overlaps exist
+        )
+
+        # Rename columns to standard naming
+        merged = merged.rename(columns={"clazz": "class", "func": "method"})
+
         return merged
 
     def _ensure_api_loc_index(self):
@@ -618,7 +676,10 @@ class SAPipeline:
             k_norm  = self._api_key(pkg, cls, mtd, self._normalize_sig(sig))
             d = {"package": pkg, "class": cls, "method": mtd, "signature": sig, "location": loc}
             idx[k_exact].append(d); idx[k_norm].append(d)
+            if 'createSecureSocketConnector(Server, String, int, SslStores)' in sig:
+                print("sig EXSTS: ", sig, " k_exact: ", k_exact, " k_norm: ", k_norm)
         self._api_loc_index = idx
+        print(len(df))
 
     def retrieve_src(self, row):
         # row comes from LLM (no location)
@@ -631,17 +692,15 @@ class SAPipeline:
         #FIXME: some keys might not be returning right causing empty keys and cands and sources
         key_exact = self._api_key(pkg, cls, mtd, sig)
         key_norm  = self._api_key(pkg, cls, mtd, self._normalize_sig(sig))
-        # print('\nkey_exact: ', self._api_loc_index.get(key_exact))
-        # print('\nkey_norm: ', self._api_loc_index.get(key_norm))
         cands = self._api_loc_index.get(key_exact) or self._api_loc_index.get(key_norm) or []
         if not cands:
+            print(f"key_exact: {key_exact}\n, key_norm: {key_norm}\n, cands: {cands}\n\n")
             return "// source unavailable"
-
         loc = cands[0].get("location","")
-        print('\nloc: ', loc)
+        # print('loc: ', loc)
         file_path, start, end = self._parse_location(loc)
         file_path = self._normalize_path_from_location(file_path)
-        print('file_path: ', file_path)
+        # print('file_path: ', file_path)
         if not file_path:
             return f"// source unavailable (bad location: {loc})"
 
@@ -988,7 +1047,7 @@ class SAPipeline:
         self.project_logger.info("==> Stage 4: Querying GPT for source function parameters...")
         if not os.path.exists(self.llm_labelled_source_func_params_path) or self.overwrite or self.overwrite_labelled_func_param:
             # 1. Get LLM and fetch information used for prompt
-            system_prompt = FUNC_PARAM_LABELLING_SYSTEM_PROMPT
+            system_prompt = FUNC_PARAM_LABELLING_SYSTEM_PROMPT_WITH_SRC
             proj_description = self.fetch_project_description_from_readme()
             proj_username = self.project_name.split("_")[0]
             proj_name = self.project_name.split("_")[2]
@@ -1001,63 +1060,92 @@ class SAPipeline:
 
             # 4. Setup dispatch function. This function will be invoked for each batch, where i = 0, batch_size, 2 * batch_size, ...
             def process_candidate_batch(i):
-                # 4.1. Get the batch of to query candidates
                 batch = candidates[i:i + self.label_func_param_batch_size]
-                api_list_text = "\n".join([",".join([row[0], row[1], row[3], row[4]]) for row in batch])
-
-                # 4.2. Build the user prompt and dump it
-                user_prompt = FUNC_PARAM_LABELLING_USER_PROMPT.format(
+                api_list_text = "\n".join(["".join([row[0], ",", row[1], ",", row[3], ",", row[4]]) for row in batch])
+                user_prompt = FUNC_PARAM_LABELLING_USER_PROMPT_WITH_SRC.format(
                     project_username=proj_username,
                     project_name=proj_name,
                     project_readme_summary=proj_description,
                     methods=api_list_text)
                 with open(f"{self.label_func_params_log_path}/raw_user_prompt_{i}.txt", "w") as f:
                     f.write(user_prompt + "\n")
-
-
                 return [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ]
-
-            # 5. Actually dispatch the tasks
-            # args = range(0, len(candidates), self.label_func_param_batch_size)
-            # indiv_results = thread_map(process_candidate_batch, args, max_workers=self.num_threads)
 
             args = range(0, len(candidates), self.label_func_param_batch_size)
             indiv_prompts = [process_candidate_batch(i) for i in args]
             indiv_results = []
             responses = self.get_model().predict(indiv_prompts, batch_size=self.num_threads)
             for i, response in zip(args, responses):
-                #FIXME: could remove the clean stuff
                 clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response).strip(), flags=re.DOTALL)
                 json_result = self.parse_json(clean)
-                
                 with open(f"{self.label_func_params_log_path}/raw_llm_response_{i}.txt", "w") as f:
                         f.write(response + "\n")
                 indiv_results.append(json_result)
 
-            # # FIRST-PASS SPLIT
-            # known = [r for r in indiv_results if r.get("type") == "source" and r.get("tainted_input")]
-            # unknown = [r for r in indiv_results if r.get("type") == "unknown" or not r.get("tainted_input")]
-            # print(f"\n===> After first pass:\n{len(known)}/{len(indiv_results)} known\n{len(unknown)}/{len(indiv_results)} unknown\n")
-            #
-            # # SECOND PASS on unknowns WITH SOURCE CODE
-            # if unknown:
-            #     # Ensure unknowns carry the 4 keys needed to fetch source (package,class,method,signature)
-            #     # If any missing, try to derive from your candidates mapping before calling:
-            #     second_pass = self.process_unknown_func_params(unknown)
-            #     # keep only the ones that actually became sources
-            #     # newly_known = [r for r in second_pass if r.get("type") == "source" and r.get("tainted_input")]
-            #     self.project_logger.info(f"  ==> After second pass {len(newly_known)} new apis were labeled.")
-            #     known.extend(newly_known)
+            # Identify instances where need_src is true
+            need_src_instances = [item for batch in indiv_results for item in batch if item.get("need_src", "false") == "true"]
+            second_pass_results = []
+            if need_src_instances:
+                self.project_logger.info(f"  ==> Second pass: {len(need_src_instances)} functions require source code context.")
+                ########### Let's get the location
+                ext_df = pd.read_csv(self.external_apis_csv_path, keep_default_na=False)
 
-            # 6. Merge all the results
+                def normalize(sig: str) -> str:
+                    return self._normalize_sig(sig)
+
+                # Precompute a lookup map with normalized signatures
+                ext_index = {}
+                for _, row in ext_df.iterrows():
+                    key = (row["package"], row["clazz"], row["func"], normalize(row["full_signature"]))
+                    ext_index[key] = row["location"]
+                    # print(f"Internal Location Retrieved: {row['location']}***************")
+
+                # Enrich internal funcs
+                for inst in need_src_instances:
+                    key = (inst.get("package",""), inst.get("class",""), inst.get("method",""), normalize(inst.get("signature","")))
+                    if key in ext_index:
+                        inst["location"] = ext_index[key]
+                ###########
+
+                # Retrieve source code for those instances
+                for idx, item in enumerate(need_src_instances):
+                    source_code = self.retrieve_src(item)
+                    # Prepare second pass prompt
+                    api_list_text = ",".join([
+                        item.get("package", ""),
+                        item.get("class", ""),
+                        item.get("method", ""),
+                        item.get("signature", ""),
+                        source_code.replace("\n", "\\n")
+                    ])
+                    user_prompt = FUNC_PARAM_LABELLING_USER_PROMPT.format(
+                        project_username=proj_username,
+                        project_name=proj_name,
+                        project_readme_summary=proj_description,
+                        methods=api_list_text)
+                    with open(f"{self.label_func_params_log_path}/secondpass_user_prompt_{idx}.txt", "w") as f:
+                        f.write(user_prompt + "\n")
+                    prompt = [
+                        {"role": "system", "content": FUNC_PARAM_LABELLING_SYSTEM_PROMPT_WITH_SRC},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                    response = self.get_model().predict([prompt], batch_size=1)[0]
+                    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(response).strip(), flags=re.DOTALL)
+                    json_result = self.parse_json(clean)
+                    with open(f"{self.label_func_params_log_path}/secondpass_llm_response_{idx}.txt", "w") as f:
+                        f.write(str(response) + "\n")
+                    if isinstance(json_result, list):
+                        second_pass_results.extend(json_result)
+                    elif isinstance(json_result, dict):
+                        second_pass_results.append(json_result)
+            # Combine all results and proceed as usual
             merged_llm_results = []
             for indiv_result in indiv_results:
-                merged_llm_results.extend(indiv_result)
-
-            # 7. Save the result for this project
+                merged_llm_results.extend([item for item in indiv_result if item.get("need_src", "false") != "true"])
+            merged_llm_results.extend(second_pass_results)
             self.project_logger.info(f"  ==> Finished querying LLM. #Function with source param: {len(merged_llm_results)}")
             if not self.test_run:
                 json.dump(merged_llm_results, open(self.llm_labelled_source_func_params_path, "w"), indent=2)

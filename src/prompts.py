@@ -85,13 +85,51 @@ In the result list, only keep the functions that might be used by downstream lib
 Do not output anything other than JSON.\
 """
 
-FUNC_PARAM_LABELLING_USER_PROMPT = """\
+FUNC_PARAM_LABELLING_SYSTEM_PROMPT_WITH_SRC = """\
+You are a security expert. \
+You are given a list of APIs implemented in established Java libraries, \
+and you need to identify whether some of these APIs could be potentially invoked by downstream libraries with malicious end-user (not programmer) inputs. \
+For instance, functions that deserialize or parse inputs might be used by downstream libraries and would need to add sanitization for malicious user inputs. \
+On the other hand, functions like HTTP request handlers are typically final and won't be called by a downstream package. \
+Utility functions that are not related to the primary purpose of the package should also be ignored. \
+Return the result as a json list with each object in the format:
+
+{ "package": <package name>,
+  "class": <class name>,
+  "method": <method name>,
+  "signature": <signature>,
+  "tainted_input": <a list of argument names that are potentially tainted>,
+  "need_src": <"true" or "false"}
+
+In the result list, only keep the functions that might be used by downstream libraries and is potentially invoked with malicious end-user inputs as well as ones that require source code inspection. \
+If you need to inspect the source code to determine whether the function is potentially invoked by downstream libraries, \
+just set the "need_src" to "true" and leave the "tainted_input" empty, otherwise, set "need_src" to true. \
+Do not output anything other than JSON.\
+"""
+
+FUNC_PARAM_LABELLING_USER_PROMPT_WITH_SRC = """\
 You are analyzing the Java package {project_username}/{project_name}. \
 Here is the package summary:
 
 {project_readme_summary}
 
 Please look at the following public methods in the library and their documentations (if present). \
+What are the most important functions that look like can be invoked by a downstream Java package that is dependent on {project_name}, \
+and that the function can be called with potentially malicious end-user inputs? \
+If the package does not seem to be a library, just return empty list as the result. \
+Utility functions that are not related to the primary purpose of the package should also be ignored.
+
+Package,Class,Method,Doc
+{methods}
+"""
+
+FUNC_PARAM_LABELLING_USER_PROMPT = """\
+You are analyzing the Java package {project_username}/{project_name}. \
+Here is the package summary:
+
+{project_readme_summary}
+
+Please look at the following public methods in the library and their source code & documentations (if present). \
 What are the most important functions that look like can be invoked by a downstream Java package that is dependent on {project_name}, \
 and that the function can be called with potentially malicious end-user inputs? \
 If the package does not seem to be a library, just return empty list as the result. \
